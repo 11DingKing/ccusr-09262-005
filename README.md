@@ -11,6 +11,10 @@
 - **数据只追加、迟到数据形成新版本**：观测按自然键
   `(项目, 度量, 期间, 口径)` 记录；每批导入递增数据版本并给出
   `added / changed / retracted` 差异。缺失值显式登记为 `null`。
+  每条记录标记来源渠道（`manual` 人工填报 / `partner_api` 合作方接口 /
+  `migration` 历史迁移，缺省 `manual`）；查询自然键返回按版本排序的
+  **来源链**而非仅最终值，撤回跳作为链终点。来源链持久化于 SQLite，
+  服务重启后仍返回同一条谱系。
 - **口径会签留痕**：换算规则（`canonical = value × factor + offset`）
   需指定多方会签，集齐签署方后恰好生效一次；规则回滚只切换生效指针，
   历史版本保留，已出报告不受影响。
@@ -45,8 +49,9 @@
 | `GET  /indicators` / `GET /indicators/{code}` | 指标列表 / 详情（含全部版本） |
 | `POST /indicators/{code}/versions` | 登记指标新版本 |
 | `POST /evidence` | 登记证据来源（sha256、URI） |
-| `POST /projects/{pid}/imports` | 导入数据，形成新数据版本并返回差异 |
+| `POST /projects/{pid}/imports` | 导入数据，形成新数据版本并返回差异（记录可带 `source`） |
 | `GET  /projects/{pid}/versions/{ver}/diff?against=n` | 版本间差异 |
+| `GET  /projects/{pid}/observations/lineage?measure=&period=&caliber=` | 自然键的观测来源链（每跳带版本号） |
 | `POST /rules` | 登记换算规则新版本（会签中） |
 | `POST /rules/{rule_id}/signatures` | 会签（集齐自动生效） |
 | `POST /rules/rollback` | 规则回滚到历史版本 |
@@ -83,7 +88,8 @@ python3 -m unittest discover -s tests -v
 覆盖场景：缺失值三种策略（skip/zero/fail）、跨年度观察期窗口、
 迟到数据新版本与差异、撤回记录、并发会签恰好生效一次、
 幂等提交与并发收敛、断点恢复与失败标记、指标更新不可改写旧报告、
-规则回滚仅影响新报告、授权粒度过滤、复核独立性与导出留痕、HTTP 全链路。
+规则回滚仅影响新报告、授权粒度过滤、复核独立性与导出留痕、HTTP 全链路、
+观测来源链（三渠道、版本号、撤回终点、重启后可追溯）。
 
 ## 编译检查
 

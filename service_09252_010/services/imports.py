@@ -4,7 +4,14 @@ from __future__ import annotations
 import re
 
 from ..domain.errors import NotFoundError, ValidationError
-from ..domain.models import EvidenceSource, ImportBatch, Observation, Principal
+from ..domain.models import (
+    OBSERVATION_SOURCES,
+    SOURCE_LABELS,
+    EvidenceSource,
+    ImportBatch,
+    Observation,
+    Principal,
+)
 from ..domain.periods import validate_period
 from ..persistence.database import Database
 from ..persistence.store import Store
@@ -91,6 +98,7 @@ class ImportService:
                         evidence_id=rec["evidence_id"],
                         institution_id=principal.institution_id,
                         created_at=now,
+                        source=rec["source"],
                     )
                 )
             new_snapshot = _effective_map(store.snapshot(project_id, seq))
@@ -122,6 +130,7 @@ class ImportService:
         period = raw.get("period")
         caliber = raw.get("caliber")
         evidence_id = raw.get("evidence_id")
+        source = raw.get("source", "manual")
         if not measure or not isinstance(measure, str):
             raise ValidationError(f"{where}: measure 缺失")
         try:
@@ -130,6 +139,10 @@ class ImportService:
             raise ValidationError(f"{where}: {exc.message}") from None
         if not caliber or not isinstance(caliber, str):
             raise ValidationError(f"{where}: caliber 缺失")
+        if source not in OBSERVATION_SOURCES:
+            raise ValidationError(
+                f"{where}: source 非法，取值 {OBSERVATION_SOURCES}"
+            )
         evidence = store.get_evidence(evidence_id or "")
         if evidence is None or evidence.project_id != project_id:
             raise ValidationError(f"{where}: 证据 {evidence_id!r} 未登记于项目 {project_id}")
@@ -156,6 +169,61 @@ class ImportService:
             "value": value,
             "retract": retract,
             "evidence_id": evidence_id,
+            "source": source,
+        }
+
+    def lineage(self, principal: Principal, project_id: str, *, measure: str,
+                period: str, caliber: str) -> dict:
+        """查询一个自然键的观测来源链（含每跳的数据版本号），而不只是最终值。
+
+        链为只追加日志的完整重放：人工填报、合作方接口、历史迁移等各次取值
+        均按版本升序返回，撤回跳作为当前终点。仅校验项目级 view 授权。
+        """
+        validate_period(period)
+        if not measure or not isinstance(measure, str):
+            raise ValidationError("measure 缺失")
+        if not caliber or not isinstance(caliber, str):
+            raise ValidationError("caliber 缺失")
+        with self.db.read() as conn:
+            store = Store(conn)
+            AccessPolicy(store).require(principal, project_id, "*", "view")
+            if not store.has_batch(project_id):
+                raise NotFoundError(f"项目不存在或尚无数据版本: {project_id}")
+            chain = store.lineage(project_id, measure, period, caliber)
+            evidence = {
+                e.id: {
+                    "kind": e.kind,
+                    "uri": e.uri,
+                    "sha256": e.sha256,
+                    "registered_by": e.registered_by,
+                    "registered_at": e.registered_at,
+                }
+                for e in store.evidence_by_ids(
+                    sorted({hop["evidence_id"] for hop in chain})
+                )
+            }
+        if not chain:
+            raise NotFoundError(
+                f"自然键无任何观测记录: "
+                f"({project_id}, {measure}, {period}, {caliber})"
+            )
+        latest = chain[-1]
+        return {
+            "project_id": project_id,
+            "measure": measure,
+            "period": period,
+            "caliber": caliber,
+            "current_version_no": latest["version_no"],
+            "current_value": latest["value"],
+            "retracted": latest["retracted"],
+            "chain": [
+                {
+                    **hop,
+                    "source_label": SOURCE_LABELS[hop["source"]],
+                    "evidence": evidence[hop["evidence_id"]],
+                }
+                for hop in chain
+            ],
         }
 
 

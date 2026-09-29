@@ -19,6 +19,22 @@ class MissingPolicy(str, Enum):
     FAIL = "fail"  # 任一缺失即失败
 
 
+# 观测来源渠道：来源谱系中每一跳记录的取值渠道。
+SOURCE_MANUAL = "manual"  # 人工填报
+SOURCE_PARTNER_API = "partner_api"  # 合作方接口
+SOURCE_MIGRATION = "migration"  # 历史迁移
+OBSERVATION_SOURCES: tuple[str, ...] = (
+    SOURCE_MANUAL,
+    SOURCE_PARTNER_API,
+    SOURCE_MIGRATION,
+)
+SOURCE_LABELS: dict[str, str] = {
+    SOURCE_MANUAL: "人工填报",
+    SOURCE_PARTNER_API: "合作方接口",
+    SOURCE_MIGRATION: "历史迁移",
+}
+
+
 class RuleStatus(str, Enum):
     """换算规则版本的生命周期。"""
 
@@ -104,6 +120,7 @@ class Observation:
     evidence_id: str
     institution_id: str
     created_at: str
+    source: str = SOURCE_MANUAL  # 取值渠道，见 OBSERVATION_SOURCES
 
     @property
     def natural_key(self) -> tuple[str, str, str, str]:

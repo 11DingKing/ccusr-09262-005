@@ -55,7 +55,8 @@ CREATE TABLE IF NOT EXISTS observations (
     retracted INTEGER NOT NULL DEFAULT 0,
     evidence_id TEXT NOT NULL REFERENCES evidence(id),
     institution_id TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'manual'
 );
 CREATE INDEX IF NOT EXISTS idx_observations_key
     ON observations (project_id, measure, period, caliber);
@@ -159,7 +160,20 @@ def connect(path: str) -> sqlite3.Connection:
     if path != ":memory:":
         conn.execute("PRAGMA journal_mode = WAL")
     conn.executescript(SCHEMA)
+    _migrate(conn)
     return conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """对老库做增量列迁移（IF NOT EXISTS 不会修改已存在的表）。"""
+    columns = {
+        r["name"] for r in conn.execute("PRAGMA table_info(observations)")
+    }
+    if "source" not in columns:
+        conn.execute(
+            "ALTER TABLE observations ADD COLUMN source TEXT NOT NULL"
+            " DEFAULT 'manual'"
+        )
 
 
 class UnitOfWork(AbstractContextManager):

@@ -130,11 +130,11 @@ class Store:
     def add_observation(self, obs: Observation) -> None:
         self.conn.execute(
             "INSERT INTO observations (batch_id, project_id, measure, period,"
-            " caliber, value, retracted, evidence_id, institution_id, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " caliber, value, retracted, evidence_id, institution_id,"
+            " created_at, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (obs.batch_id, obs.project_id, obs.measure, obs.period, obs.caliber,
              obs.value, 1 if obs.retracted else 0, obs.evidence_id,
-             obs.institution_id, obs.created_at),
+             obs.institution_id, obs.created_at, obs.source),
         )
 
     def snapshot(self, project_id: str, seq: int) -> list[Observation]:
@@ -171,7 +171,51 @@ class Store:
             evidence_id=row["evidence_id"],
             institution_id=row["institution_id"],
             created_at=row["created_at"],
+            source=row["source"],
         )
+
+    def lineage(self, project_id: str, measure: str, period: str,
+                caliber: str) -> list[dict]:
+        """重放一个自然键的来源链：按数据版本号升序返回全部追加记录。
+
+        每跳包含版本号、来源渠道、值、证据与批次原因；撤回跳 value 为 null、
+        retracted 为 true，并作为链的当前终点。链只追加，不随新版本删除旧跳。
+        """
+        rows = self.conn.execute(
+            """
+            SELECT b.seq AS version_no, b.reason AS batch_reason,
+                   b.created_by AS imported_by, b.created_at AS imported_at,
+                   o.value AS value, o.retracted AS retracted,
+                   o.evidence_id AS evidence_id, o.source AS source,
+                   o.institution_id AS institution_id
+            FROM observations o
+            JOIN import_batches b ON b.id = o.batch_id
+            WHERE o.project_id = ? AND o.measure = ?
+              AND o.period = ? AND o.caliber = ?
+            ORDER BY b.seq, o.id
+            """,
+            (project_id, measure, period, caliber),
+        ).fetchall()
+        return [
+            {
+                "version_no": r["version_no"],
+                "source": r["source"],
+                "value": (None if r["retracted"] else r["value"]),
+                "retracted": bool(r["retracted"]),
+                "evidence_id": r["evidence_id"],
+                "batch_reason": r["batch_reason"],
+                "imported_by": r["imported_by"],
+                "institution_id": r["institution_id"],
+                "imported_at": r["imported_at"],
+            }
+            for r in rows
+        ]
+
+    def has_batch(self, project_id: str) -> bool:
+        return self.conn.execute(
+            "SELECT 1 FROM import_batches WHERE project_id = ? LIMIT 1",
+            (project_id,),
+        ).fetchone() is not None
 
     # ---- 换算规则与会签 ----
     def next_rule_version(self, rule_key: str) -> int:

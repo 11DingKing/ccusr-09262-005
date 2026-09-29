@@ -155,6 +155,96 @@ class HttpApiTests(unittest.TestCase):
         }, {"X-Institution-Id": "陌生机构"})
         self.assertEqual(status, 403)
 
+    def test_observation_lineage_chain_and_restart_recovery(self) -> None:
+        """来源链查询固定结果；服务重启（SQLite 重开）后仍返回同一条谱系。"""
+        # 授权机构A：导入与查看
+        for permission in ("import", "view"):
+            status, _ = call(self.app, "POST", "/grants", {
+                "institution_id": "机构A", "project_id": "P1",
+                "category": "*", "permission": permission,
+            }, SUP)
+            self.assertEqual(status, 201)
+
+        status, body = call(self.app, "POST", "/evidence", {
+            "project_id": "P1", "kind": "年报",
+            "uri": "s3://ev/2024.pdf", "sha256": "a" * 64,
+        }, INST_A)
+        self.assertEqual(status, 201, body)
+        evidence_id = body["evidence_id"]
+
+        def import_one(value, source, reason):
+            status, body = call(self.app, "POST", "/projects/P1/imports", {
+                "reason": reason,
+                "records": [{"measure": "enrollment_count",
+                             "period": "2024-01", "caliber": "DE-DUAL",
+                             "value": value, "source": source,
+                             "evidence_id": evidence_id}],
+            }, INST_A)
+            self.assertEqual(status, 201, body)
+            return body["version_no"]
+
+        self.assertEqual(import_one(10, "manual", "首批人工填报"), 1)
+        self.assertEqual(import_one(12, "partner_api", "合作方接口同步"), 2)
+        self.assertEqual(import_one(11, "migration", "历史迁移补录"), 3)
+
+        query = ("measure=enrollment_count&period=2024-01&caliber=DE-DUAL")
+        status, lineage = call(
+            self.app, "GET", "/projects/P1/observations/lineage",
+            headers=INST_A, query=query,
+        )
+        self.assertEqual(status, 200, lineage)
+        self.assertEqual(lineage["current_version_no"], 3)
+        self.assertEqual(lineage["current_value"], 11.0)
+        self.assertFalse(lineage["retracted"])
+        self.assertEqual(
+            [(h["version_no"], h["source"], h["source_label"], h["value"])
+             for h in lineage["chain"]],
+            [(1, "manual", "人工填报", 10.0),
+             (2, "partner_api", "合作方接口", 12.0),
+             (3, "migration", "历史迁移", 11.0)],
+        )
+        self.assertEqual(lineage["chain"][0]["batch_reason"], "首批人工填报")
+        self.assertEqual(lineage["chain"][0]["evidence"]["uri"],
+                         "s3://ev/2024.pdf")
+
+        # 重启服务：新建应用实例指向同一 SQLite 文件，谱系必须原样返回
+        restarted = make_app(f"{self._tmp.name}/api.db")
+        status, after_restart = call(
+            restarted, "GET", "/projects/P1/observations/lineage",
+            headers=SUP, query=query,
+        )
+        self.assertEqual(status, 200, after_restart)
+        self.assertEqual(after_restart, lineage)
+
+    def test_observation_lineage_unknown_key_404(self) -> None:
+        status, ev = call(self.app, "POST", "/evidence", {
+            "project_id": "P1", "kind": "年报",
+            "uri": "s3://ev/2.pdf", "sha256": "b" * 64,
+        }, SUP)
+        self.assertEqual(status, 201)
+        status, body = call(self.app, "POST", "/projects/P1/imports", {
+            "reason": "首批",
+            "records": [{"measure": "m", "period": "2024-01",
+                         "caliber": "CN-STD", "value": 1,
+                         "evidence_id": ev["evidence_id"]}],
+        }, SUP)
+        self.assertEqual(status, 201, body)
+        status, body = call(
+            self.app, "GET", "/projects/P1/observations/lineage",
+            headers=SUP,
+            query="measure=m&period=2024-02&caliber=CN-STD",
+        )
+        self.assertEqual(status, 404)
+        self.assertEqual(body["error"], "not_found")
+
+    def test_observation_lineage_missing_params_422(self) -> None:
+        status, body = call(
+            self.app, "GET", "/projects/P1/observations/lineage",
+            headers=SUP, query="measure=m",
+        )
+        self.assertEqual(status, 422)
+        self.assertEqual(body["error"], "validation_error")
+
 
 if __name__ == "__main__":
     unittest.main()
