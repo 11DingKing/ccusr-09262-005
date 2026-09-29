@@ -45,8 +45,9 @@
 | `GET  /indicators` / `GET /indicators/{code}` | 指标列表 / 详情（含全部版本） |
 | `POST /indicators/{code}/versions` | 登记指标新版本 |
 | `POST /evidence` | 登记证据来源（sha256、URI） |
-| `POST /projects/{pid}/imports` | 导入数据，形成新数据版本并返回差异 |
+| `POST /projects/{pid}/imports` | 导入数据，形成新数据版本并返回差异（记录可带 `origin_kind`/`origin_ref`：`manual` 人工填报 / `partner_api` 合作方接口 / `historical_migration` 历史迁移） |
 | `GET  /projects/{pid}/versions/{ver}/diff?against=n` | 版本间差异 |
+| `GET  /projects/{pid}/provenance?measure=&period=&caliber=&version=` | 观测来源谱系：按自然键返回来源链（当前值逐跳回溯）与各跳版本号；`version` 缺省取最新 |
 | `POST /rules` | 登记换算规则新版本（会签中） |
 | `POST /rules/{rule_id}/signatures` | 会签（集齐自动生效） |
 | `POST /rules/rollback` | 规则回滚到历史版本 |

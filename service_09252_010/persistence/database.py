@@ -55,10 +55,20 @@ CREATE TABLE IF NOT EXISTS observations (
     retracted INTEGER NOT NULL DEFAULT 0,
     evidence_id TEXT NOT NULL REFERENCES evidence(id),
     institution_id TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    origin_kind TEXT NOT NULL DEFAULT 'manual',
+    origin_ref TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_observations_key
     ON observations (project_id, measure, period, caliber);
+CREATE TABLE IF NOT EXISTS provenance_links (
+    child_observation_id INTEGER NOT NULL REFERENCES observations(id),
+    parent_observation_id INTEGER NOT NULL REFERENCES observations(id),
+    relation TEXT NOT NULL,
+    PRIMARY KEY (child_observation_id, parent_observation_id)
+);
+CREATE INDEX IF NOT EXISTS idx_provenance_parent
+    ON provenance_links (parent_observation_id);
 CREATE TABLE IF NOT EXISTS conversion_rules (
     id TEXT PRIMARY KEY,
     rule_key TEXT NOT NULL,
@@ -159,7 +169,22 @@ def connect(path: str) -> sqlite3.Connection:
     if path != ":memory:":
         conn.execute("PRAGMA journal_mode = WAL")
     conn.executescript(SCHEMA)
+    _migrate(conn)
     return conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """对旧库补列：observations 的来源字段为后加，缺失时原地追加。"""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(observations)")}
+    if "origin_kind" not in cols:
+        conn.execute(
+            "ALTER TABLE observations ADD COLUMN origin_kind TEXT NOT NULL"
+            " DEFAULT 'manual'"
+        )
+    if "origin_ref" not in cols:
+        conn.execute(
+            "ALTER TABLE observations ADD COLUMN origin_ref TEXT NOT NULL DEFAULT ''"
+        )
 
 
 class UnitOfWork(AbstractContextManager):

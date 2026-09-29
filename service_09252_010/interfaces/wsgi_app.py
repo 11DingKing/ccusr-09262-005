@@ -63,6 +63,7 @@ class Application:
             ("POST", ("projects", "{pid}", "imports"), self._import_batch),
             ("GET", ("projects", "{pid}", "versions", "{ver}", "diff"),
              self._version_diff),
+            ("GET", ("projects", "{pid}", "provenance"), self._provenance),
             ("POST", ("rules",), self._create_rule),
             ("GET", ("rules",), self._list_rules),
             ("POST", ("rules", "{rule_id}", "signatures"), self._sign_rule),
@@ -197,6 +198,29 @@ class Application:
         against = int(against_raw) if against_raw else None
         result = ctx.container.imports.version_diff(
             ctx.match["pid"], int(ctx.match["ver"]), against
+        )
+        return 200, result
+
+    def _provenance(self, p: Principal, body: dict, ctx: Context):
+        from ..domain.errors import ValidationError
+
+        measure = ctx.query("measure")
+        period = ctx.query("period")
+        caliber = ctx.query("caliber")
+        if not measure or not period or not caliber:
+            raise ValidationError("来源链查询需提供 measure、period、caliber 查询参数")
+        version_raw = ctx.query("version")
+        version_raw = ctx.query("version")
+        if version_raw:
+            try:
+                version_no = int(version_raw)
+            except ValueError:
+                raise ValidationError("version 必须为整数") from None
+        else:
+            version_no = None
+        result = ctx.container.imports.provenance(
+            p, ctx.match["pid"], measure=measure, period=period,
+            caliber=caliber, version_no=version_no,
         )
         return 200, result
 

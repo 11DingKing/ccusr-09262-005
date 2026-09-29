@@ -41,6 +41,14 @@ class ReportStatus(str, Enum):
     REJECTED = "rejected"  # 复核驳回（终态）
 
 
+class OriginKind(str, Enum):
+    """观测来源类型：查询时沿来源链逐层展示。"""
+
+    MANUAL = "manual"  # 人工填报
+    PARTNER_API = "partner_api"  # 合作方接口
+    HISTORICAL_MIGRATION = "historical_migration"  # 历史迁移
+
+
 # 计算任务的断点步骤，顺序即执行顺序。
 CALCULATION_STEPS: tuple[str, ...] = ("snapshot", "convert", "aggregate", "persist")
 
@@ -104,10 +112,45 @@ class Observation:
     evidence_id: str
     institution_id: str
     created_at: str
+    origin_kind: OriginKind = OriginKind.MANUAL
+    origin_ref: str = ""  # 人工填报人/合作方接口标识/迁移批次标识
 
     @property
     def natural_key(self) -> tuple[str, str, str, str]:
         return (self.project_id, self.measure, self.period, self.caliber)
+
+
+@dataclass(frozen=True)
+class ProvenanceLink:
+    """来源谱系中的一条边：子观测派生自父观测（如合作方接口/历史迁移）。
+
+    链接在行写入时固化到 SQLite；服务重启后仍可沿边重放同一条谱系。
+    """
+
+    child_observation_id: int
+    parent_observation_id: int
+    relation: str  # 派生关系，如 imported_from / migrated_from
+
+
+@dataclass(frozen=True)
+class ProvenanceNode:
+    """来源链上的一跳：一次观测登记及其上游。"""
+
+    observation_id: int
+    version_no: int  # 该记录所属的数据版本（导入批次 seq）
+    measure: str
+    period: str
+    caliber: str
+    value: float | None
+    retracted: bool
+    origin_kind: OriginKind
+    origin_ref: str
+    evidence_id: str
+    institution_id: str
+    batch_id: str
+    reason: str
+    created_at: str
+    relation_from_parent: str | None  # 由父节点派生而来的关系；链首为 None
 
 
 @dataclass(frozen=True)

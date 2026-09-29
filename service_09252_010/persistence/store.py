@@ -12,6 +12,9 @@ from ..domain.models import (
     Indicator,
     IndicatorVersion,
     Observation,
+    OriginKind,
+    ProvenanceLink,
+    ProvenanceNode,
     Report,
     ReportStatus,
     RuleStatus,
@@ -127,15 +130,120 @@ class Store:
              batch.created_by, batch.created_at),
         )
 
-    def add_observation(self, obs: Observation) -> None:
-        self.conn.execute(
+    def add_observation(self, obs: Observation) -> int:
+        """插入观测行，返回其自增主键（谱系链接据此挂接）。"""
+        cur = self.conn.execute(
             "INSERT INTO observations (batch_id, project_id, measure, period,"
-            " caliber, value, retracted, evidence_id, institution_id, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " caliber, value, retracted, evidence_id, institution_id, created_at,"
+            " origin_kind, origin_ref)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (obs.batch_id, obs.project_id, obs.measure, obs.period, obs.caliber,
              obs.value, 1 if obs.retracted else 0, obs.evidence_id,
-             obs.institution_id, obs.created_at),
+             obs.institution_id, obs.created_at,
+             obs.origin_kind.value, obs.origin_ref),
         )
+        return int(cur.lastrowid)
+
+    def add_provenance_link(self, link: ProvenanceLink) -> None:
+        self.conn.execute(
+            "INSERT OR IGNORE INTO provenance_links"
+            " (child_observation_id, parent_observation_id, relation)"
+            " VALUES (?, ?, ?)",
+            (link.child_observation_id, link.parent_observation_id,
+             link.relation),
+        )
+
+    def provenance_parent(self, child_observation_id: int) -> tuple[int, str] | None:
+        """返回 (parent_id, relation)；谱系链首（无上游）返回 None。"""
+        row = self.conn.execute(
+            "SELECT parent_observation_id, relation FROM provenance_links"
+            " WHERE child_observation_id = ? ORDER BY parent_observation_id",
+            (child_observation_id,),
+        ).fetchall()
+        if not row:
+            return None
+        # 一条观测只登记一个上游；多条时取首条并保持确定顺序。
+        return row[0]["parent_observation_id"], row[0]["relation"]
+
+    def provenance_chain(self, project_id: str, measure: str, period: str,
+                         caliber: str, version_no: int | None = None) -> list[ProvenanceNode]:
+        """沿来源链回溯：当前有效观测（或指定版本）→ 逐跳上游。
+
+        链接与观测均持久化在 SQLite 中，因此服务重启后重放得到同一条谱系。
+        """
+        current = self.effective_observation_id(
+            project_id, measure, period, caliber, version_no
+        )
+        if current is None:
+            return []
+        chain: list[ProvenanceNode] = []
+        seen: set[int] = set()
+        while current is not None:
+            if current in seen:  # 防御环路
+                break
+            seen.add(current)
+            row = self.conn.execute(
+                """
+                SELECT o.*, b.seq AS batch_seq, b.reason AS batch_reason
+                FROM observations o
+                JOIN import_batches b ON b.id = o.batch_id
+                WHERE o.id = ?
+                """,
+                (current,),
+            ).fetchone()
+            if row is None:
+                break
+            parent = self.provenance_parent(current)
+            chain.append(ProvenanceNode(
+                observation_id=row["id"],
+                version_no=row["batch_seq"],
+                measure=row["measure"],
+                period=row["period"],
+                caliber=row["caliber"],
+                value=row["value"],
+                retracted=bool(row["retracted"]),
+                origin_kind=OriginKind(row["origin_kind"]),
+                origin_ref=row["origin_ref"],
+                evidence_id=row["evidence_id"],
+                institution_id=row["institution_id"],
+                batch_id=row["batch_id"],
+                reason=row["batch_reason"],
+                created_at=row["created_at"],
+                relation_from_parent=parent[1] if parent else None,
+            ))
+            current = parent[0] if parent else None
+        return chain
+
+    def effective_observation_id(self, project_id: str, measure: str, period: str,
+                                 caliber: str, version_no: int | None) -> int | None:
+        """取指定数据版本（缺省取最新）下该自然键的有效观测行 id。
+
+        与 snapshot() 同一重放语义：同自然键取不晚于该版本的最高批次，
+        撤回记录视为该版本下不存在。
+        """
+        if version_no is None:
+            seq_row = self.conn.execute(
+                "SELECT MAX(seq) AS seq FROM import_batches WHERE project_id = ?",
+                (project_id,),
+            ).fetchone()
+            if seq_row is None or seq_row["seq"] is None:
+                return None
+            version_no = seq_row["seq"]
+        row = self.conn.execute(
+            """
+            SELECT o.id AS id, o.retracted AS retracted
+            FROM observations o
+            JOIN import_batches b ON b.id = o.batch_id
+            WHERE o.project_id = ? AND o.measure = ? AND o.period = ?
+              AND o.caliber = ? AND b.seq <= ?
+            ORDER BY b.seq DESC, o.id DESC
+            LIMIT 1
+            """,
+            (project_id, measure, period, caliber, version_no),
+        ).fetchone()
+        if row is None or row["retracted"]:
+            return None
+        return row["id"]
 
     def snapshot(self, project_id: str, seq: int) -> list[Observation]:
         """重放指定数据版本的有效观测（同一自然键取最高批次）。"""
@@ -171,6 +279,8 @@ class Store:
             evidence_id=row["evidence_id"],
             institution_id=row["institution_id"],
             created_at=row["created_at"],
+            origin_kind=OriginKind(row["origin_kind"] or "manual"),
+            origin_ref=row["origin_ref"] or "",
         )
 
     # ---- 换算规则与会签 ----
